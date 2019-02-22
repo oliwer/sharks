@@ -4,7 +4,7 @@ SharKS - SSH Key Server
 Sharks is a public key server for OpenSSH allowing you to centralize the authentication
 process, in a safe and scalable way. No need to copy SSH keys on your servers anymore!
 
-# How does it works?
+## How does it works?
 
 1. Put all your public keys in a single directory.
 2. Start SharKS. It will scan the directory and calculate the fingerprint of each key.
@@ -14,7 +14,7 @@ process, in a safe and scalable way. No need to copy SSH keys on your servers an
 
 We rely on the `AuthorizedKeysCommand` feature introduced in OpenSSH 6.2.
 
-# OpenSSH Setup
+## OpenSSH Setup
 
 To configure OpenSSH to query SharKS when authenticating a user, you
 must add the following lines to `/etc/ssh/sshd_config`:
