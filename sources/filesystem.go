@@ -3,42 +3,52 @@ package sources
 import (
 	"io/ioutil"
 	"log"
+	"os"
 	"path"
-	"time"
 
 	"github.com/AirVantage/sharks"
 )
 
-// ScanDirectory regularly reads `pubKeysDir` to populate the cache.
-func ScanDirectory(cache *sharks.KeyCache, scanFrequency time.Duration, pubKeysDir string) {
-	for {
-		new := 0
+type Filesystem struct {
+	Cache *sharks.KeyCache
+	Path  string
+}
 
-		files, err := ioutil.ReadDir(pubKeysDir)
-		if err != nil {
-			log.Fatalln(err)
-		}
-
-		for _, file := range files {
-			if file.Name()[0] == '.' {
-				continue
-			}
-
-			bytes, err := ioutil.ReadFile(path.Join(pubKeysDir, file.Name()))
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-
-			if cache.Upsert(bytes, file.Name()) {
-				new++
-			}
-		}
-
-		if new > 0 {
-			log.Printf("found %d new keys\n", new)
-		}
-
-		time.Sleep(scanFrequency)
+func (fs *Filesystem) Init() {
+	dir, err := os.Open(fs.Path)
+	if err != nil {
+		log.Fatalln(err)
 	}
+	info, _ := dir.Stat()
+	if !info.IsDir() {
+		log.Fatalln(fs.Path, "must be a directory")
+	}
+}
+
+func (fs *Filesystem) Scan() int {
+	new := 0
+
+	files, err := ioutil.ReadDir(fs.Path)
+	if err != nil {
+		log.Println(err)
+		return 0
+	}
+
+	for _, file := range files {
+		if file.Name()[0] == '.' {
+			continue
+		}
+
+		bytes, err := ioutil.ReadFile(path.Join(fs.Path, file.Name()))
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		if fs.Cache.Upsert(bytes, file.Name()) {
+			new++
+		}
+	}
+
+	return new
 }

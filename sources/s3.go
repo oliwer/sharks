@@ -5,86 +5,94 @@ import (
 	"io"
 	"log"
 	"strings"
-	"time"
 
-	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 
 	"github.com/AirVantage/sharks"
 )
 
-// To simplify things, we limit the number of keys we can get from S3.
-var maxKeysPerBucket int64 = 1000
+// Same limit as in aws sdk.
+var defaultMaxKeysPerBucket int64 = 1000
 
-// ScanS3Bucket regularly reads `s3bucket` to populate the cache.
-func ScanS3Bucket(cache *sharks.KeyCache, scanFrequency time.Duration, s3bucket, s3region string) {
-	sess := session.Must(session.NewSession())
-	sess.Config.Region = &s3region
-	svc := s3.New(sess)
+type S3Bucket struct {
+	Cache   *sharks.KeyCache
+	Bucket  string
+	Region  string
+	MaxKeys int64
+
+	session  *session.Session
+	s3svc    *s3.S3
+	prefix   string
+	queryAll *s3.ListObjectsV2Input
+}
+
+func (bk *S3Bucket) Init() {
+	if bk.MaxKeys == 0 {
+		bk.MaxKeys = defaultMaxKeysPerBucket
+	}
+
+	bk.session = session.Must(session.NewSession())
+	bk.session.Config.Region = &bk.Region
+	bk.s3svc = s3.New(bk.session)
 
 	// The bucket name may also include a path prefix for the objects.
-	splitted := strings.SplitN(s3bucket, "/", 2)
-	bucket := splitted[0]
-	var prefix string
-	if len(splitted) == 2 {
-		prefix = splitted[1]
+	parts := strings.SplitN(bk.Bucket, "/", 2)
+	bk.Bucket = parts[0]
+	if len(parts) == 2 {
+		bk.prefix = parts[1]
 	}
 
-	s3Get := func(key *string) ([]byte, error) {
-		params := &s3.GetObjectInput{
-			Bucket: &bucket,
-			Key:    key,
-		}
-		s3resp, err := svc.GetObject(params)
+	bk.queryAll = &s3.ListObjectsV2Input{
+		Bucket:  &bk.Bucket,
+		MaxKeys: &bk.MaxKeys,
+		Prefix:  &bk.prefix,
+	}
+
+	// Test if the bucket is readable.
+	_, err := bk.s3svc.GetBucketPolicy(&s3.GetBucketPolicyInput{Bucket: &bk.Bucket})
+	if err != nil {
+		log.Fatalln(err)
+	}
+}
+
+func (bk *S3Bucket) getObject(key *string) ([]byte, error) {
+	s3resp, err := bk.s3svc.GetObject(&s3.GetObjectInput{
+		Bucket: &bk.Bucket, Key: key})
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	_, err = io.Copy(&buf, s3resp.Body)
+	s3resp.Body.Close()
+	return buf.Bytes(), err
+}
+
+func (bk *S3Bucket) Scan() int {
+	new := 0
+
+	objectList, err := bk.s3svc.ListObjectsV2(bk.queryAll)
+	if err != nil {
+		log.Println(err)
+		return 0
+	}
+
+	if int64(len(objectList.Contents)) == bk.MaxKeys {
+		log.Println("warning: the limit of objects per bucket has been reached:", bk.MaxKeys)
+	}
+
+	for _, obj := range objectList.Contents {
+		keybytes, err := bk.getObject(obj.Key)
 		if err != nil {
-			return nil, err
+			log.Println(err)
+			continue
 		}
-		defer s3resp.Body.Close()
-		var buf bytes.Buffer
-		if _, err = io.Copy(&buf, s3resp.Body); err != nil {
-			return nil, err
+
+		if bk.Cache.Upsert(keybytes, *obj.Key) {
+			new++
 		}
-		return buf.Bytes(), nil
 	}
 
-	query := &s3.ListObjectsV2Input{
-		Bucket:  &bucket,
-		MaxKeys: &maxKeysPerBucket,
-		Prefix:  &prefix,
-	}
-
-	for {
-		new := 0
-		objectList, err := svc.ListObjectsV2(query)
-		if err != nil {
-			if aerr, ok := err.(awserr.Error); ok {
-				if aerr.Code() == s3.ErrCodeNoSuchBucket {
-					log.Fatalln(aerr.Error())
-				} else {
-					log.Println(err)
-				}
-			} else {
-				log.Println(err)
-			}
-		}
-
-		for _, obj := range objectList.Contents {
-			keybytes, err := s3Get(obj.Key)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-
-			if cache.Upsert(keybytes, *obj.Key) {
-				new++
-			}
-		}
-
-		if new > 0 {
-			log.Printf("found %d new keys\n", new)
-		}
-
-		time.Sleep(scanFrequency)
-	}
+	return new
 }

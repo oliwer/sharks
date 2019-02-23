@@ -77,11 +77,21 @@ func main() {
 	go cacheCleaner()
 
 	// Select the source of SSH keys
+	var src sources.Source
 	if *s3bucket != "" {
-		go sources.ScanS3Bucket(cache, *scanFrequency, *s3bucket, *s3region)
+		src = &sources.S3Bucket{
+			Cache:  cache,
+			Bucket: *s3bucket,
+			Region: *s3region,
+		}
 	} else {
-		go sources.ScanDirectory(cache, *scanFrequency, *pubKeysDir)
+		src = &sources.Filesystem{
+			Cache: cache,
+			Path:  *pubKeysDir,
+		}
 	}
+	src.Init()
+	go sources.KeepScanning(src, *scanFrequency)
 
 	http.HandleFunc("/check", checkHandler)
 	http.HandleFunc("/lookup", lookupHandler)
